@@ -23,35 +23,36 @@ NexAgent is a composable, observable, and trustworthy autonomous agent framework
 ## Architecture Overview
 
 ```
-User / API Channel
-        │
-        ▼
-  ┌─────────────┐
-  │ Trust Policy│  ← channel trust, autonomy dials
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐
-  │  Agent Loop │  ← async tool-calling loop (runtime/)
-  └──────┬──────┘
-         │
-   ┌─────┴──────┐
-   │  Inference  │  ← local classifier → frontier model (inference/)
-   │   Router   │
-   └─────┬──────┘
-         │
-  ┌──────▼──────┐      ┌─────────────────┐
-  │ Coordinator │◄────►│  Tiered Memory  │
-  │  (agents/)  │      │  (memory/)      │
-  └──────┬──────┘      └─────────────────┘
-         │
-  ┌──────▼──────┐      ┌─────────────────┐
-  │Tool Registry│◄────►│  Audit + Sandbox │
-  │  (tools/)   │      │  (tools/)        │
-  └─────────────┘      └─────────────────┘
-         │
-  ┌──────▼──────┐
-  │Observability│  ← traces, cost tracking (observability/)
-  └─────────────┘
+User / CLI / API Channel
+           │
+           ▼
+     ┌─────────────┐
+     │ Trust Policy│  ← channel trust, autonomy dials
+     └──────┬──────┘
+            │
+     ┌──────▼──────┐
+     │  Agent Loop │  ← async tool-calling loop (runtime/)
+     └──────┬──────┘
+            │
+      ┌─────┴──────┐
+      │  Inference  │  ← local classifier → frontier model (inference/)
+      │   Router   │
+      └─────┬──────┘
+            │
+     ┌──────▼──────────┐      ┌─────────────────┐
+     │   Coordinator   │◄────►│  Tiered Memory  │
+     │   + Workflow    │      │  (memory/)      │
+     │   DSL (agents/) │      └─────────────────┘
+     └──────┬──────────┘
+            │
+     ┌──────▼──────┐      ┌─────────────────┐
+     │Tool Registry│◄────►│  Audit + Sandbox │
+     │  (tools/)   │      │  (tools/)        │
+     └─────────────┘      └─────────────────┘
+            │
+     ┌──────▼──────┐
+     │Observability│  ← traces, cost tracking (observability/)
+     └─────────────┘
 ```
 
 ---
@@ -64,7 +65,40 @@ User / API Channel
 pip install -e ".[dev]"
 ```
 
-### Run
+### CLI — Three modes of operation
+
+**1. Run a YAML workflow:**
+
+```bash
+# Define agents and a workflow in YAML, then execute
+nexagent run examples/workflow.yaml -a examples/agents.yaml
+```
+
+**2. Interactive chat — build workflows on the fly:**
+
+```bash
+nexagent chat
+```
+
+In the REPL you can register agents, add workflow nodes, set variables, and run — all dynamically:
+
+```
+nexagent> agents add       # Define a new agent interactively
+nexagent> node add         # Add a node to the workflow graph
+nexagent> vars set topic AI
+nexagent> run              # Execute the workflow
+```
+
+**3. Manage agent definitions:**
+
+```bash
+nexagent agents list -f examples/agents.yaml
+nexagent agents import examples/agents.yaml
+```
+
+### Programmatic API
+
+**Single-agent mode:**
 
 ```python
 import asyncio
@@ -78,6 +112,55 @@ async def main():
     loop = AgentLoop(context=ctx, policy=policy)
     result = await loop.run("Summarise the top 3 items in my task list.")
     print(result.output)
+
+asyncio.run(main())
+```
+
+**Multi-agent workflow from YAML:**
+
+```python
+import asyncio
+from nexagent.agents import AgentConfig, AgentRegistry, WorkflowParser
+from nexagent.agents import AgentCoordinator
+from nexagent.tools.registry import ToolRegistry
+from nexagent.trust.policy import TrustPolicy
+
+async def main():
+    registry = ToolRegistry()
+    policy = TrustPolicy.default()
+    agent_registry = AgentRegistry(tool_registry=registry, policy=policy)
+
+    # Register agents
+    agent_registry.register(AgentConfig(
+        name="researcher",
+        system_prompt="You are a research assistant.",
+    ))
+    agent_registry.register(AgentConfig(
+        name="writer",
+        system_prompt="You write reports.",
+    ))
+
+    # Parse workflow
+    parser = WorkflowParser(agent_registry=agent_registry)
+    graph, ctx = parser.parse_yaml("""
+workflow: research
+variables:
+  topic: AI
+nodes:
+  - id: search
+    agent: researcher
+    prompt: "Research {{topic}}"
+  - id: write
+    agent: writer
+    prompt: "Write report from {{search.content}}"
+    depends_on: [search]
+""")
+
+    # Execute
+    coordinator = AgentCoordinator(registry=registry, policy=policy)
+    result = await coordinator.run(graph, ctx)
+    for node_id, output in result.outputs.items():
+        print(f"{node_id}: {output.content}")
 
 asyncio.run(main())
 ```
@@ -118,8 +201,24 @@ pytest tests/ -v
 
 | File | Purpose |
 |---|---|
-| `coordinator.py` | Multi-agent coordinator with a directed acyclic task graph. Checkpoints state after each node. Replays from checkpoint on failure. |
+| `coordinator.py` | Multi-agent coordinator with a directed acyclic task graph, checkpoint/replay, dynamic node injection via `add_nodes()`, and `WorkflowContext` for structured data passing. |
 | `subagent.py` | Base class for specialised subagents. Provides tool execution, memory access, and structured output emission. |
+| `generic.py` | `GenericAgent` — runtime-configured SubAgent wrapping AgentLoop. No Python subclass needed; specify system prompt + tool set. |
+| `registry.py` | `AgentConfig` (Pydantic) + `AgentRegistry` for runtime agent definitions. Load from YAML. |
+| `workflow.py` | `WorkflowParser` (YAML → TaskGraph), `WorkflowContext` (shared state), template interpolation. |
+| `patterns.py` | `FanOutBuilder` (parallel workers + collector), `SupervisorAgent` (dynamic graph mutation). |
+
+### `nexagent/tools/`
+
+| File | Purpose |
+|---|---|
+| `registry.py` | MCP-native tool registry. Tools self-register with JSON Schema. Supports auto-discovery via entry-points. `subset()` for tool filtering. |
+| `sandbox.py` | Per-task capability grants. Blocks tools not in the granted set. Detects prompt-injection patterns in tool arguments. |
+| `audit.py` | Append-only audit log for every tool invocation: who called it, with what args, what was returned, at what cost. |
+
+### `nexagent/__main__.py`
+
+CLI entry point. `nexagent run`, `nexagent chat`, `nexagent agents`.
 
 ### `nexagent/inference/`
 
@@ -151,6 +250,41 @@ pytest tests/ -v
 | File | Purpose |
 |---|---|
 | `tracker.py` | Records task outcomes (success/failure/partial). Identifies recurring failure patterns and proposes skill patches as structured diffs. |
+
+---
+
+## Workflow YAML
+
+Define agents and workflows in YAML — no Python code required.
+
+**Agents file (`agents.yaml`):**
+
+```yaml
+agents:
+  - name: researcher
+    description: "Researches topics"
+    system_prompt: "You are a research expert..."
+    tools: [web_search]
+    max_steps: 10
+```
+
+**Workflow file (`workflow.yaml`):**
+
+```yaml
+workflow: research_report
+variables:
+  topic: "autonomous agents"
+nodes:
+  - id: research
+    agent: researcher
+    prompt: "Research {{topic}}"
+  - id: write
+    agent: writer
+    prompt: "Write report from {{research.content}}"
+    depends_on: [research]
+```
+
+Run with: `nexagent run workflow.yaml -a agents.yaml`
 
 ---
 
