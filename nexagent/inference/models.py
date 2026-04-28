@@ -121,6 +121,20 @@ class ModelPool:
         self._models: dict[str, ModelConfig] = models or {}
 
     # ------------------------------------------------------------------
+    # Public properties
+    # ------------------------------------------------------------------
+
+    @property
+    def models(self) -> dict[str, ModelConfig]:
+        """Return all models in the pool."""
+        return dict(self._models)
+
+    @property
+    def providers(self) -> dict[str, ProviderConfig]:
+        """Return all providers in the pool."""
+        return dict(self._providers)
+
+    # ------------------------------------------------------------------
     # Lookups
     # ------------------------------------------------------------------
 
@@ -277,7 +291,7 @@ def _resolve_env_var(value: str) -> str:
         var_name = m.group(1)
         env_val = os.environ.get(var_name)
         if env_val is None:
-            logger.warning("Environment variable '%s' is not set", var_name)
+            logger.debug("Environment variable '%s' is not set", var_name)
             return ""
         return env_val
     return _ENV_VAR_RE.sub(_replace, value)

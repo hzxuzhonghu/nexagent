@@ -85,6 +85,19 @@ class AgentConfig(BaseModel):
                     self.name,
                 )
 
+        # If model_pool is available but still no model, default to cheapest
+        if model_pool and not model_id:
+            try:
+                selected = model_pool.select_cheapest()
+                model_id = selected.id
+                logger.debug(
+                    "Auto-selected cheapest model '%s' for agent '%s'",
+                    model_id,
+                    self.name,
+                )
+            except KeyError:
+                logger.warning("No models in pool, falling back to env defaults")
+
         # Build router if a specific model is targeted and no router provided
         effective_router = router
         if effective_router is None and model_id:
@@ -136,11 +149,13 @@ class AgentRegistry:
         policy: TrustPolicy,
         memory: TieredMemory | None = None,
         router: InferenceRouter | None = None,
+        model_pool: Any | None = None,
     ) -> None:
         self._tool_registry = tool_registry
         self._policy = policy
         self._memory = memory
         self._router = router
+        self._model_pool = model_pool
         self._agents: dict[str, AgentConfig] = {}
 
     def register(self, config: AgentConfig) -> None:
@@ -164,6 +179,7 @@ class AgentRegistry:
             policy=self._policy,
             memory=self._memory,
             router=self._router,
+            model_pool=self._model_pool,
         )
 
     def load_yaml(self, path: Path) -> int:

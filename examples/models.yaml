@@ -1,0 +1,69 @@
+# NexAgent Model Pool — example configuration
+#
+# Copy this file to ~/.nexagent/models.yaml for auto-discovery,
+# or pass it explicitly: nexagent run workflow.yaml -m models.yaml
+#
+# Environment variables (${VAR}) are resolved at load time.
+
+providers:
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    base_url: https://api.anthropic.com/v1
+
+  ollama:
+    api_key: ollama
+    base_url: http://localhost:11434/v1
+
+models:
+  qwen3.6-plus:
+    provider: openai
+    capabilities: [text]
+    cost: {input_per_m: 0.80, output_per_m: 2.00}
+  # ---- OpenAI ----
+  gpt-4o:
+    provider: openai
+    capabilities: [text, image]
+    cost: {input_per_m: 2.50, output_per_m: 10.00}
+    context_window: 128000
+    max_tokens: 4096
+
+  gpt-4o-mini:
+    provider: openai
+    capabilities: [text]
+    cost: {input_per_m: 0.15, output_per_m: 0.60}
+    context_window: 128000
+    max_tokens: 4096
+
+  # ---- Anthropic ----
+  claude-opus-4-6:
+    provider: anthropic
+    capabilities: [text, image]
+    cost: {input_per_m: 15.00, output_per_m: 75.00}
+    context_window: 200000
+    max_tokens: 4096
+
+  claude-sonnet-4-6:
+    provider: anthropic
+    capabilities: [text, image]
+    cost: {input_per_m: 3.00, output_per_m: 15.00}
+    context_window: 200000
+    max_tokens: 4096
+
+  claude-haiku-4-5:
+    provider: anthropic
+    capabilities: [text]
+    cost: {input_per_m: 0.80, output_per_m: 4.00}
+    context_window: 200000
+    max_tokens: 4096
+
+  # ---- Local (Ollama) ----
+  llama3.1:
+    provider: ollama
+    capabilities: [text]
+    cost: {input_per_m: 0, output_per_m: 0}
+    context_window: 128000
+    max_tokens: 4096

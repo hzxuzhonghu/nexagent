@@ -226,12 +226,14 @@ class AgentCoordinator:
         memory: TieredMemory | None = None,
         checkpoint_store: CheckpointStore | None = None,
         max_concurrent: int = 4,
+        model_pool: Any | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy
         self._memory = memory or TieredMemory()
         self._checkpoints = checkpoint_store or CheckpointStore()
         self._max_concurrent = max_concurrent
+        self._model_pool = model_pool
         self._dynamic_nodes: list[TaskNode] = []
         self._dynamic_lock = anyio.Lock()
 
@@ -325,11 +327,19 @@ class AgentCoordinator:
         async with semaphore:
             logger.debug("Running node %s (run=%s)", node.id, run_id)
             try:
+                # Re-interpolate prompt at runtime so downstream nodes
+                # can resolve upstream outputs (e.g. {{research.content}})
+                if workflow_context:
+                    from nexagent.agents.workflow import interpolate_template
+
+                    node.task.prompt = interpolate_template(node.task.prompt, workflow_context)
+
                 if node.agent_class is GenericAgent and node.agent_config:
                     agent = node.agent_config.instantiate(
                         registry=self._registry,
                         policy=self._policy,
                         memory=self._memory,
+                        model_pool=self._model_pool,
                     )
                 else:
                     agent = node.agent_class(

@@ -24,16 +24,39 @@ from nexagent.agents.coordinator import AgentCoordinator
 from nexagent.agents.registry import AgentConfig, AgentRegistry
 from nexagent.agents.subagent import AgentTask
 from nexagent.agents.workflow import WorkflowContext, WorkflowParser
+from nexagent.inference.models import ModelPool
 from nexagent.runtime.context import SessionContext
 from nexagent.tools.registry import ToolRegistry
 from nexagent.trust.policy import TrustPolicy, Channel
 
 console = Console()
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DEFAULT_MODELS_PATH = Path.home() / ".nexagent" / "models.yaml"
+
 
 # ---------------------------------------------------------------------------
 # Shared setup
 # ---------------------------------------------------------------------------
+
+
+def _load_model_pool(models_path: Path | None) -> ModelPool | None:
+    """Load a ModelPool from a YAML file, or return None if unavailable."""
+    if models_path is not None and models_path.exists():
+        return ModelPool.from_yaml(models_path)
+    if models_path is not None:
+        console.print(f"[yellow]Models file not found: {models_path}[/yellow]")
+
+    # Auto-load from default path
+    if DEFAULT_MODELS_PATH.exists():
+        console.print(f"[dim]Auto-loading models from {DEFAULT_MODELS_PATH}[/dim]")
+        return ModelPool.from_yaml(DEFAULT_MODELS_PATH)
+
+    # Fall back to env-based single-model config
+    return None
 
 
 def make_tool_registry() -> ToolRegistry:
@@ -64,7 +87,7 @@ def make_policy() -> TrustPolicy:
 # ---------------------------------------------------------------------------
 
 
-async def cmd_run(workflow_path: Path, agents_path: Path | None) -> int:
+async def cmd_run(workflow_path: Path, agents_path: Path | None, models_path: Path | None) -> int:
     """Execute a YAML workflow definition."""
     if not workflow_path.exists():
         console.print(f"[red]Workflow file not found: {workflow_path}[/red]")
@@ -72,9 +95,18 @@ async def cmd_run(workflow_path: Path, agents_path: Path | None) -> int:
 
     tool_registry = make_tool_registry()
     policy = make_policy()
+    model_pool = _load_model_pool(models_path)
+
+    if model_pool:
+        console.print(
+            f"[green]Loaded {len(model_pool.models)} model(s) "
+            f"from {len(model_pool.providers)} provider(s)[/green]"
+        )
+
     agent_registry = AgentRegistry(
         tool_registry=tool_registry,
         policy=policy,
+        model_pool=model_pool,
     )
 
     # Optionally load agent definitions from a separate file
@@ -102,6 +134,7 @@ async def cmd_run(workflow_path: Path, agents_path: Path | None) -> int:
     coordinator = AgentCoordinator(
         registry=tool_registry,
         policy=policy,
+        model_pool=model_pool,
     )
     result = await coordinator.run(graph, ctx)
 
@@ -137,12 +170,14 @@ def _print_run_result(result: Any, ctx: WorkflowContext) -> None:
 class InteractiveSession:
     """Manages the interactive REPL session for dynamic agent/workflow building."""
 
-    def __init__(self) -> None:
+    def __init__(self, model_pool: ModelPool | None = None) -> None:
         self.tool_registry = make_tool_registry()
         self.policy = make_policy()
+        self.model_pool = model_pool
         self.agent_registry = AgentRegistry(
             tool_registry=self.tool_registry,
             policy=self.policy,
+            model_pool=model_pool,
         )
         self.nodes: list[dict[str, Any]] = []
         self.variables: dict[str, Any] = {}
@@ -369,6 +404,7 @@ class InteractiveSession:
         coordinator = AgentCoordinator(
             registry=self.tool_registry,
             policy=self.policy,
+            model_pool=self.model_pool,
         )
         result = await coordinator.run(graph, ctx)
         _print_run_result(result, ctx)
@@ -406,13 +442,15 @@ def _dict_to_yaml(data: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def cmd_agents(action: str, path: Path | None) -> int:
+async def cmd_agents(action: str, path: Path | None, models_path: Path | None) -> int:
     """Manage agent definitions."""
     tool_registry = make_tool_registry()
     policy = make_policy()
+    model_pool = _load_model_pool(models_path)
     agent_registry = AgentRegistry(
         tool_registry=tool_registry,
         policy=policy,
+        model_pool=model_pool,
     )
 
     if action == "list":
@@ -479,15 +517,18 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="Execute a YAML workflow")
     run_parser.add_argument("workflow", type=Path, help="Path to workflow YAML file")
     run_parser.add_argument("--agents", "-a", type=Path, help="Path to agents YAML file")
+    run_parser.add_argument("--models", "-m", type=Path, help="Path to models YAML file (auto-loads ~/.nexagent/models.yaml if present)")
 
     # chat
-    subparsers.add_parser("chat", help="Interactive multi-agent session")
+    chat_parser = subparsers.add_parser("chat", help="Interactive multi-agent session")
+    chat_parser.add_argument("--models", "-m", type=Path, help="Path to models YAML file (auto-loads ~/.nexagent/models.yaml if present)")
 
     # agents
     agents_parser = subparsers.add_parser("agents", help="Manage agent definitions")
     agents_parser.add_argument("action", choices=["list", "import"], help="Action to perform")
     agents_parser.add_argument("path", nargs="?", type=Path, help="Path to agents YAML file")
     agents_parser.add_argument("--from", "-f", dest="from_path", type=Path, help="Path to agents YAML file (for list)")
+    agents_parser.add_argument("--models", "-m", type=Path, help="Path to models YAML file (auto-loads ~/.nexagent/models.yaml if present)")
 
     args = parser.parse_args()
 
@@ -496,15 +537,20 @@ def main() -> None:
         sys.exit(0)
 
     if args.command == "run":
-        exit_code = asyncio.run(cmd_run(args.workflow, getattr(args, "agents", None)))
+        exit_code = asyncio.run(cmd_run(
+            args.workflow,
+            getattr(args, "agents", None),
+            getattr(args, "models", None),
+        ))
         sys.exit(exit_code)
     elif args.command == "chat":
-        session = InteractiveSession()
+        model_pool = _load_model_pool(getattr(args, "models", None))
+        session = InteractiveSession(model_pool=model_pool)
         exit_code = asyncio.run(session.loop())
         sys.exit(exit_code)
     elif args.command == "agents":
         path = args.from_path or getattr(args, "path", None)
-        exit_code = asyncio.run(cmd_agents(args.action, path))
+        exit_code = asyncio.run(cmd_agents(args.action, path, getattr(args, "models", None)))
         sys.exit(exit_code)
 
 
