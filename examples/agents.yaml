@@ -1,0 +1,18 @@
+agents:
+  - name: researcher
+    description: "Researches topics and gathers information"
+    system_prompt: "You are a research assistant. Analyze the given topic and provide a detailed summary with key findings."
+    tools: []
+    max_steps: 10
+
+  - name: writer
+    description: "Writes structured reports"
+    system_prompt: "You are a technical writer. Take the provided research and write a clear, concise report."
+    tools: []
+    max_steps: 10
+
+  - name: reviewer
+    description: "Reviews and critiques content"
+    system_prompt: "You are a critical reviewer. Evaluate the given content for accuracy, completeness, and clarity."
+    tools: []
+    max_steps: 5

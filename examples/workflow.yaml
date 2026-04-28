@@ -1,0 +1,21 @@
+workflow: research_report
+metadata:
+  description: "Research a topic, write a report, then review it"
+
+variables:
+  topic: "the future of autonomous agents"
+
+nodes:
+  - id: research
+    agent: researcher
+    prompt: "Research the topic: {{topic}}. Provide a detailed summary."
+
+  - id: report
+    agent: writer
+    prompt: "Write a report based on this research: {{research.content}}"
+    depends_on: [research]
+
+  - id: review
+    agent: reviewer
+    prompt: "Review this report: {{report.content}}"
+    depends_on: [report]
