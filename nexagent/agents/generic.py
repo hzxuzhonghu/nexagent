@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 
 from nexagent.agents.subagent import AgentOutput, AgentTask, SubAgent
+from nexagent.agents.workspace import AgentWorkspace
+from nexagent.inference.models import ModelPool
 from nexagent.inference.router import InferenceRouter
 from nexagent.memory.tiered import TieredMemory
 from nexagent.runtime.context import SessionContext
@@ -53,13 +55,29 @@ class GenericAgent(SubAgent):
         memory: TieredMemory | None = None,
         router: InferenceRouter | None = None,
         channel: str = "api",
+        model_pool: ModelPool | None = None,
+        model_id: str | None = None,
+        workspace: AgentWorkspace | None = None,
     ) -> None:
         self._agent_name = name
         self._description = description
-        self._system_prompt = system_prompt
         self._tools = tools
         self._max_steps = max_steps
         self._channel = channel
+
+        # Compose system prompt from workspace if available
+        if workspace is not None:
+            self._system_prompt = workspace.compose_system_prompt(system_prompt)
+        else:
+            self._system_prompt = system_prompt
+
+        # If model_pool + model_id provided and no router, create one
+        effective_router = router
+        if effective_router is None and model_pool is not None and model_id is not None:
+            effective_router = InferenceRouter(
+                model_pool=model_pool,
+                model_id=model_id,
+            )
 
         # If a tool whitelist is specified, create a subsetted registry
         effective_registry: ToolRegistry = registry
@@ -70,7 +88,7 @@ class GenericAgent(SubAgent):
             registry=effective_registry,
             policy=policy,
             memory=memory,
-            router=router,
+            router=effective_router,
             channel=channel,
         )
 
@@ -93,6 +111,7 @@ class GenericAgent(SubAgent):
             context=ctx,
             policy=self._policy,
             registry=self._registry,
+            router=self._router,
             max_steps=self._max_steps,
         )
 

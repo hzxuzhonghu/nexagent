@@ -158,6 +158,43 @@ class TestGenericAgentRun:
             assert output.metadata["steps"] == 20
 
     @pytest.mark.asyncio
+    async def test_run_uses_agent_router(
+        self,
+        registry: ToolRegistry,
+        policy: TrustPolicy,
+        fake_agent_loop_result: AgentResult,
+    ) -> None:
+        """Router stored on the agent should be forwarded to AgentLoop."""
+        from nexagent.inference.router import InferenceRouter
+        from nexagent.runtime.agent_loop import AgentLoop
+
+        custom_router = InferenceRouter(model="gpt-4-turbo")
+        agent = GenericAgent(
+            name="router-agent",
+            description="",
+            system_prompt="Test.",
+            registry=registry,
+            policy=policy,
+            router=custom_router,
+        )
+
+        captured: list[AgentLoop] = []
+
+        original_init = AgentLoop.__init__
+
+        def capturing_init(self_loop: AgentLoop, **kwargs: object) -> None:
+            captured.append(self_loop)
+            original_init(self_loop, **kwargs)  # type: ignore[arg-type]
+
+        with patch("nexagent.runtime.agent_loop.AgentLoop.run", new_callable=AsyncMock) as mock_run:
+            with patch.object(AgentLoop, "__init__", capturing_init):
+                mock_run.return_value = fake_agent_loop_result
+                await agent.run(AgentTask(prompt="hello"))
+
+        assert captured, "AgentLoop was never instantiated"
+        assert captured[0]._router is custom_router
+
+    @pytest.mark.asyncio
     async def test_run_passes_task_context_to_metadata(
         self,
         registry: ToolRegistry,

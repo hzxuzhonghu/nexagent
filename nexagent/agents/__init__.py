@@ -17,13 +17,16 @@ from nexagent.agents.workflow import (
     WorkflowSpec,
     interpolate_template,
 )
+from nexagent.agents.workspace import AgentPersona, AgentWorkspace
 
 __all__ = [
-    "AgentCoordinator",
     "AgentConfig",
+    "AgentCoordinator",
     "AgentOutput",
+    "AgentPersona",
     "AgentRegistry",
     "AgentTask",
+    "AgentWorkspace",
     "CoordinatorResult",
     "GenericAgent",
     "NodeStatus",

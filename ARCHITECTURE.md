@@ -324,3 +324,122 @@ The coordinator gains an `add_nodes()` async method and a `_dynamic_nodes` queue
 
 ### Trade-offs
 Dynamic node merging happens synchronously in the coordinator loop (with a lock). If many nodes are added rapidly, the lock contention could slow the loop. The `_dynamic_nodes` list is drained atomically, so nodes added during the current iteration are processed in the next.
+
+---
+
+## 14. CLI Entry Point and Interactive REPL
+
+### Context
+The framework is entirely programmatic — users must write Python to define agents, workflows, and execute them. This creates a high barrier to entry and prevents non-programmers from using the system.
+
+### Decision
+`__main__.py` implements three subcommands:
+
+- **`nexagent run <workflow.yaml>`** — one-shot workflow execution from YAML. Accepts `--agents` to preload agent definitions.
+- **`nexagent agents list/import`** — manage and inspect agent definitions.
+- **`nexagent chat`** — interactive REPL that maintains an in-memory `AgentRegistry` and workflow graph. Users can register agents, add nodes, set variables, and run — all without writing Python.
+
+The CLI uses `argparse` for subcommand parsing and `rich` for formatted tables and markdown output. The interactive session is a stateful loop around `asyncio.run()`.
+
+### Alternatives Considered
+- **Click / Typer** — richer CLI features but adds a dependency; `argparse` is stdlib
+- **REST API server** — enables remote use but adds deployment complexity; CLI is sufficient for local single-user operation
+- **Web UI** — ideal for non-technical users but out of scope; the CLI REPL provides a middle ground
+
+### Trade-offs
+The REPL session is in-memory only — exiting loses the session state. Workflow definitions can be exported via the YAML serializer (`_dict_to_yaml`), but there's no `save` command yet. For persistent sessions, users should use YAML files directly.
+
+---
+
+## 15. Model Pool and Multi-Provider Support
+
+### Context
+The inference layer originally used a single global model configured via `NEXAGENT_MODEL`, `NEXAGENT_API_BASE`, and `NEXAGENT_API_KEY` environment variables. This prevents per-agent model selection, multi-provider setups, and cost-aware model routing.
+
+### Decision
+`inference/models.py` introduces a `ModelPool` abstraction:
+
+- **`ProviderConfig`** — name, api_key, base_url, headers for a single inference provider
+- **`ModelConfig`** — id, provider reference, capabilities list (e.g. `["text", "image"]`), `ModelCost` (per-million token pricing), context_window, max_tokens, reasoning flag
+- **`ModelPool`** — maps provider names → ProviderConfigs and model ids → ModelConfigs. Provides:
+  - `get_provider(model_id)` → resolves provider credentials for a model
+  - `select_by_capability(caps)` → first model supporting all requested capabilities
+  - `select_cheapest(caps?)` → cost-optimised model selection
+  - `from_yaml(path)` → load from YAML with `${ENV_VAR}` interpolation
+  - `from_env()` → backward-compatible pool from existing NEXAGENT_* env vars
+
+The inference router (`call_frontier()` and `InferenceRouter`) accepts optional `model_pool` + `model_id` params. When provided, provider credentials are resolved from the pool instead of environment variables.
+
+**AgentConfig integration:** New fields `model`, `model_capabilities`, and deprecated `model_override`. Resolution order: explicit `model` → `model_override` → capability-based selection from pool → env var fallback.
+
+### Alternatives Considered
+- **Single env var per model** — doesn't scale; multi-model setups require coordinating multiple env vars
+- **Pydantic-settings** — adds a dependency; our dataclass approach is lighter and sufficient
+- **Model registry service** — overkill for single-user deployment; YAML file is simple and auditable
+
+### Trade-offs
+The model pool is loaded once at startup. Dynamic model hot-reloading is not supported — changing models requires restarting the agent process.
+
+---
+
+## 16. Agent Workspace Dirs and Persona
+
+### Context
+Agents were defined as flat `AgentConfig` with only `system_prompt`. There was no persistent agent identity, no personality, and no environment-specific memory beyond the session.
+
+### Decision
+`agents/workspace.py` introduces a workspace directory model inspired by OpenClaw:
+
+- **`AgentPersona`** — data class holding identity fields (name, creature, vibe, emoji), user context, soul rules, tool notes, and long-term memory
+- **`AgentWorkspace`** — manages a directory at a configurable path. `ensure()` creates the directory and seeds template files (`IDENTITY.md`, `USER.md`, `SOUL.md`, `TOOLS.md`, `MEMORY.md`). `load_persona()` / `save_persona()` read/write persona data. `compose_system_prompt(base_prompt)` merges the base system prompt with identity and soul rules.
+
+**AgentConfig integration:** `workspace_dir` field. When set, `GenericAgent.__init__()` composes the effective system prompt via `workspace.compose_system_prompt()`.
+
+### Alternatives Considered
+- **Single AGENTS.md for everything** — simpler but conflates personality, memory, and tool config
+- **Database-backed persona** — adds latency; file-based is accessible, diffable, and editable
+- **No workspace — everything in env vars** — works for simple cases but doesn't support evolving agent identity
+
+### Trade-offs
+Workspace files grow over time. `compose_system_prompt()` truncates MEMORY.md to 20 lines to stay within reasonable prompt length. For very long memory, the semantic memory tier should be used instead.
+
+---
+
+## 17. Tool Discovery via Markdown Frontmatter
+
+### Context
+Tools could only be registered via Python decorators (`@registry.tool()`). Users needed to write Python code to add tools, creating a barrier for non-programmers.
+
+### Decision
+`tools/discovery.py` implements a discovery system for tools defined in `.md` files with YAML frontmatter:
+
+- **`ToolSpec`** — parsed representation: name, description, JSON Schema parameters, source path, implementation code (optional)
+- **`ToolDiscovery`** — scans directories for `.md` files, parses YAML frontmatter for metadata, extracts Python implementation from fenced code blocks, compiles and registers functions
+
+Format:
+```
+---
+name: current_date
+description: Return the current date
+schema:
+  type: object
+  properties:
+    format: {type: string}
+---
+
+```python
+from datetime import datetime
+async def current_date(format: str = "%Y-%m-%d") -> str:
+    return datetime.now().strftime(format)
+```
+```
+
+Tools can be metadata-only (no implementation) — useful for documenting external tools that are registered elsewhere.
+
+### Alternatives Considered
+- **JSON config files** — valid but YAML is more readable and supports comments
+- **TOML-based tools** — pyproject-compatible but less familiar to non-Python users
+- **Inline shell scripts** — fragile; Python ensures cross-platform compatibility
+
+### Trade-offs
+`exec()` is used to compile tool implementations from markdown. This is safe because tool files are local and trusted. For untrusted tool sources, module-path references should be used instead of inline code.

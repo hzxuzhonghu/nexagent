@@ -46,7 +46,10 @@ class AgentConfig(BaseModel):
     system_prompt: str
     tools: list[str] = []
     max_steps: int = 20
-    model_override: str | None = None
+    model_override: str | None = None          # DEPRECATED — use ``model`` instead
+    model: str | None = None                    # Model id from a ModelPool
+    workspace_dir: str | None = None            # Path to agent workspace directory
+    model_capabilities: list[str] = []          # Capability requirements for auto-select
 
     def instantiate(
         self,
@@ -54,8 +57,47 @@ class AgentConfig(BaseModel):
         policy: TrustPolicy,
         memory: TieredMemory | None = None,
         router: InferenceRouter | None = None,
+        model_pool: Any | None = None,
     ) -> GenericAgent:
-        """Create a GenericAgent from this configuration."""
+        """Create a GenericAgent from this configuration.
+
+        Resolution order for model selection:
+        1. Explicit ``model`` field (preferred)
+        2. Deprecated ``model_override`` field (backward compat)
+        3. Auto-select from ``model_pool`` using ``model_capabilities``
+        4. Fall back to the global NEXAGENT_MODEL env var
+        """
+        from nexagent.agents.workspace import AgentWorkspace
+
+        # Resolve effective model id: prefer model, then model_override
+        model_id = self.model or self.model_override
+
+        # If model_pool is available but no explicit model, use capabilities to select
+        if model_pool and not model_id and self.model_capabilities:
+            try:
+                selected = model_pool.select_by_capability(self.model_capabilities)
+                model_id = selected.id
+            except KeyError:
+                logger.warning(
+                    "No model in pool supports capabilities %s for agent '%s', "
+                    "falling back to default",
+                    self.model_capabilities,
+                    self.name,
+                )
+
+        # Build router if a specific model is targeted and no router provided
+        effective_router = router
+        if effective_router is None and model_id:
+            effective_router = InferenceRouter(
+                model_pool=model_pool,
+                model_id=model_id,
+            )
+
+        # Build workspace if configured
+        workspace: AgentWorkspace | None = None
+        if self.workspace_dir:
+            workspace = AgentWorkspace(self.workspace_dir)
+
         return GenericAgent(
             name=self.name,
             description=self.description,
@@ -65,7 +107,10 @@ class AgentConfig(BaseModel):
             registry=registry,
             policy=policy,
             memory=memory,
-            router=router,
+            router=effective_router,
+            model_pool=model_pool if effective_router is None else None,
+            model_id=model_id if effective_router is None else None,
+            workspace=workspace,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,6 +177,7 @@ class AgentRegistry:
                 system_prompt: "You are a research expert..."
                 tools: [web_search, read_url]
                 max_steps: 15
+                model_override: "gpt-4o"   # optional; overrides NEXAGENT_MODEL
 
         Returns the number of agents loaded.
         """

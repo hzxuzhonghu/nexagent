@@ -193,7 +193,8 @@ pytest tests/ -v
 
 | File | Purpose |
 |---|---|
-| `registry.py` | MCP-native tool registry. Tools self-register with JSON Schema. Supports auto-discovery via entry-points. |
+| `registry.py` | MCP-native tool registry. Tools self-register with JSON Schema. Supports auto-discovery via entry-points. `subset()` for tool filtering. |
+| `discovery.py` | **Tool Discovery** — loads tools from ``.md`` files with YAML frontmatter. Parse name/description/schema from frontmatter, Python implementation from fenced code blocks. |
 | `sandbox.py` | Per-task capability grants. Blocks tools not in the granted set. Detects prompt-injection patterns in tool arguments. |
 | `audit.py` | Append-only audit log for every tool invocation: who called it, with what args, what was returned, at what cost. |
 
@@ -203,8 +204,9 @@ pytest tests/ -v
 |---|---|
 | `coordinator.py` | Multi-agent coordinator with a directed acyclic task graph, checkpoint/replay, dynamic node injection via `add_nodes()`, and `WorkflowContext` for structured data passing. |
 | `subagent.py` | Base class for specialised subagents. Provides tool execution, memory access, and structured output emission. |
-| `generic.py` | `GenericAgent` — runtime-configured SubAgent wrapping AgentLoop. No Python subclass needed; specify system prompt + tool set. |
-| `registry.py` | `AgentConfig` (Pydantic) + `AgentRegistry` for runtime agent definitions. Load from YAML. |
+| `generic.py` | `GenericAgent` — runtime-configured SubAgent wrapping AgentLoop. Supports `model_pool`, `model_id`, and `workspace` for per-agent model selection and persona enrichment. |
+| `registry.py` | `AgentConfig` (Pydantic) + `AgentRegistry` for runtime agent definitions. Config fields: `model`, `workspace_dir`, `model_capabilities`. Load from YAML. |
+| `workspace.py` | **Agent Workspace** — `AgentPersona` (identity, soul, memory) and `AgentWorkspace` (directory management, persona I/O, system prompt composition). |
 | `workflow.py` | `WorkflowParser` (YAML → TaskGraph), `WorkflowContext` (shared state), template interpolation. |
 | `patterns.py` | `FanOutBuilder` (parallel workers + collector), `SupervisorAgent` (dynamic graph mutation). |
 
@@ -224,7 +226,8 @@ CLI entry point. `nexagent run`, `nexagent chat`, `nexagent agents`.
 
 | File | Purpose |
 |---|---|
-| `router.py` | Two-stage routing: a lightweight local intent classifier (regex + heuristic scoring) gates calls to the frontier model. Low-complexity tasks never leave the process. |
+| `router.py` | Two-stage routing: a lightweight local intent classifier (regex + heuristic scoring) gates calls to the frontier model. Supports both single-model and ModelPool-backed inference. |
+| `models.py` | **Model Pool** — `ModelConfig` (id, provider, capabilities, cost, context), `ProviderConfig` (api_key, base_url), `ModelPool` (from_yaml, from_env, capability/cost selection). |
 
 ### `nexagent/proactive/`
 
@@ -290,18 +293,85 @@ Run with: `nexagent run workflow.yaml -a agents.yaml`
 
 ## Configuration
 
-NexAgent is 12-factor compliant. All configuration via environment variables:
+NexAgent is 12-factor compliant. All configuration via environment variables or YAML config files:
+
+### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `NEXAGENT_MODEL` | `gpt-4o` | Frontier model identifier |
-| `NEXAGENT_API_BASE` | `https://api.openai.com/v1` | OpenAI-compatible base URL |
-| `NEXAGENT_API_KEY` | *(required)* | API key — never hardcoded |
+| `NEXAGENT_MODEL` | `gpt-4o` | Frontier model identifier (fallback if no models.yaml) |
+| `NEXAGENT_API_BASE` | `https://api.openai.com/v1` | OpenAI-compatible base URL (fallback) |
+| `NEXAGENT_API_KEY` | *(required)* | API key — never hardcoded (fallback) |
 | `NEXAGENT_LOCAL_THRESHOLD` | `0.7` | Intent confidence threshold for local handling |
 | `NEXAGENT_MAX_STEPS` | `20` | Maximum agent loop iterations |
 | `NEXAGENT_MEMORY_PATH` | `~/.nexagent/memory` | Persistent memory directory |
 | `NEXAGENT_AUDIT_PATH` | `~/.nexagent/audit.jsonl` | Audit log file |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry collector |
+
+### Model Pool (models.yaml)
+
+For multi-provider, multi-model setups, define a `models.yaml`:
+
+```yaml
+providers:
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    base_url: https://api.openai.com/v1
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    base_url: https://api.anthropic.com/v1
+
+models:
+  gpt-4o:
+    provider: openai
+    capabilities: [text, image]
+    cost: {input_per_m: 2.50, output_per_m: 10.00}
+    context_window: 128000
+  gpt-4o-mini:
+    provider: openai
+    capabilities: [text]
+    cost: {input_per_m: 0.15, output_per_m: 0.60}
+  claude-sonnet-4-6:
+    provider: anthropic
+    capabilities: [text, image]
+    cost: {input_per_m: 3.00, output_per_m: 15.00}
+    context_window: 200000
+```
+
+Load it:
+
+```python
+from nexagent.inference.models import ModelPool
+
+pool = ModelPool.from_yaml("models.yaml")
+router = InferenceRouter(model_pool=pool, model_id="claude-sonnet-4-6")
+```
+
+### Agent Workspaces
+
+Each agent can have a persistent workspace directory with persona files (SOUL.md, MEMORY.md, IDENTITY.md, etc.):
+
+```
+~/.nexagent/agents/researcher/
+  AGENTS.md     # operational manual
+  SOUL.md       # personality and behavioral rules
+  USER.md       # user profile
+  IDENTITY.md   # agent name, vibe, emoji
+  TOOLS.md      # environment-specific notes
+  MEMORY.md     # long-term curated memory
+```
+
+Configure per agent:
+
+```yaml
+agents:
+  - name: researcher
+    system_prompt: "You research topics."
+    model: gpt-4o
+    workspace_dir: ~/.nexagent/agents/researcher
+```
+
+The workspace enriches the system prompt with persona data automatically. See `nexagent/agents/workspace.py`.
 
 ---
 

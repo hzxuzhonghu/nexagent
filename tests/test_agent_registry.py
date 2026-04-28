@@ -84,9 +84,34 @@ class TestAgentConfig:
         )
         assert config.model_override == "gpt-4o"
 
-    def test_instantiate_returns_generic_agent(
+    def test_instantiate_uses_model_override(
         self, tool_registry: ToolRegistry, policy: TrustPolicy
     ) -> None:
+        config = AgentConfig(
+            name="heavy",
+            system_prompt="Think hard.",
+            model_override="gpt-4-turbo",
+        )
+        agent = config.instantiate(registry=tool_registry, policy=policy)
+        assert isinstance(agent, GenericAgent)
+        # model_override is mapped to model_id on the router
+        assert agent._router._model_id == "gpt-4-turbo"
+
+    def test_instantiate_explicit_router_takes_precedence(
+        self, tool_registry: ToolRegistry, policy: TrustPolicy
+    ) -> None:
+        from nexagent.inference.router import InferenceRouter
+
+        explicit_router = InferenceRouter(model="gpt-3.5-turbo")
+        config = AgentConfig(
+            name="override-test",
+            system_prompt="Test.",
+            model_override="gpt-4o",
+        )
+        agent = config.instantiate(registry=tool_registry, policy=policy, router=explicit_router)
+        assert agent._router is explicit_router
+
+
         config = AgentConfig(
             name="instantiated",
             description="Test",
@@ -176,7 +201,24 @@ agents:
         assert config.max_steps == 15
         assert config.tools == ["search", "read_url"]
 
-    def test_load_empty_file_returns_zero(self, agent_registry: AgentRegistry, tmp_path: Path) -> None:
+    def test_load_yaml_with_model_override(
+        self, agent_registry: AgentRegistry, tmp_path: Path
+    ) -> None:
+        yaml_path = tmp_path / "agents.yaml"
+        yaml_path.write_text("""
+agents:
+  - name: heavy
+    system_prompt: "Think deeply."
+    model_override: "gpt-4-turbo"
+  - name: light
+    system_prompt: "Be quick."
+""")
+        count = agent_registry.load_yaml(yaml_path)
+        assert count == 2
+        assert agent_registry.get("heavy").model_override == "gpt-4-turbo"
+        assert agent_registry.get("light").model_override is None
+
+
         empty = tmp_path / "empty.yaml"
         empty.write_text("")
         count = agent_registry.load_yaml(empty)

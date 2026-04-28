@@ -28,6 +28,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
 import httpx
@@ -60,7 +61,7 @@ class RoutedResponse:
     routed_to: str = "frontier"
 
     @classmethod
-    def local(cls, content: str) -> "RoutedResponse":
+    def local(cls, content: str) -> RoutedResponse:
         return cls(
             content=content,
             finish_reason="stop",
@@ -145,9 +146,9 @@ def _handle_arithmetic(text: str) -> str:
 
 
 def _handle_datetime() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return f"The current UTC time is {now.strftime('%Y-%m-%d %H:%M:%S UTC')}."
 
 
@@ -175,12 +176,24 @@ def classify_locally(text: str) -> tuple[str | None, float]:
 async def call_frontier(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
+    model_pool: Any | None = None,
+    model_id: str | None = None,
     model: str = NEXAGENT_MODEL,
     api_base: str = NEXAGENT_API_BASE,
     api_key: str = NEXAGENT_API_KEY,
     timeout: float = 60.0,
 ) -> RoutedResponse:
-    """Make a single call to the frontier model via OpenAI-compatible API."""
+    """Make a single call to the frontier model via OpenAI-compatible API.
+
+    If ``model_pool`` and ``model_id`` are provided, provider credentials
+    and the model identifier are resolved from the pool. Otherwise falls
+    back to the explicit ``model``/``api_base``/``api_key`` parameters.
+    """
+    if model_pool is not None and model_id is not None:
+        provider = model_pool.get_provider(model_id)
+        model = model_id
+        api_base = provider.base_url
+        api_key = provider.api_key
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -246,11 +259,16 @@ class InferenceRouter:
     threshold:
         Minimum local classifier confidence to avoid a frontier call.
     model:
-        Frontier model identifier.
+        Frontier model identifier. Ignored if ``model_pool`` and
+        ``model_id`` are provided.
     api_base:
-        OpenAI-compatible API base URL.
+        OpenAI-compatible API base URL. Ignored if ``model_pool`` is set.
     api_key:
-        API key. Defaults to NEXAGENT_API_KEY env var.
+        API key. Ignored if ``model_pool`` is set.
+    model_pool:
+        Optional ModelPool for multi-provider/multi-model routing.
+    model_id:
+        Optional model id to select from ``model_pool``.
     """
 
     def __init__(
@@ -259,11 +277,15 @@ class InferenceRouter:
         model: str = NEXAGENT_MODEL,
         api_base: str = NEXAGENT_API_BASE,
         api_key: str = NEXAGENT_API_KEY,
+        model_pool: Any | None = None,
+        model_id: str | None = None,
     ) -> None:
         self._threshold = threshold
         self._model = model
         self._api_base = api_base
         self._api_key = api_key
+        self._model_pool = model_pool
+        self._model_id = model_id
         self._local_calls = 0
         self._frontier_calls = 0
 
@@ -295,6 +317,8 @@ class InferenceRouter:
         return await call_frontier(
             messages=messages,
             tools=tools,
+            model_pool=self._model_pool,
+            model_id=self._model_id,
             model=self._model,
             api_base=self._api_base,
             api_key=self._api_key,
